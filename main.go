@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -27,6 +28,50 @@ func ReverseProxy(ctx *gin.Context) {
 	if targetUrl, err := url.Parse(target); err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 	} else {
+		//
+		body, err := ioutil.ReadAll(ctx.Request.Body)
+		if err != nil {
+			logrus.Errorln("error is parsing reqest body")
+		}
+		var reqBody map[string]interface{}
+		err = json.Unmarshal(body, &reqBody)
+		if err != nil {
+			logrus.Errorln("error cannot unmarshal request body")
+		}
+		authHeader := ctx.Request.Header["Authorization"]
+		if len(authHeader) > 0 {
+			if authHeader[0] != "" {
+				res, err := http.Get(os.Getenv("user_service_address") + fmt.Sprintf("/v1/users/byToken/%s/", authHeader[0]))
+				if err != nil {
+					logrus.Errorln("error cannot send request to user service")
+				}
+				body, err := ioutil.ReadAll(res.Body)
+				if err != nil {
+					logrus.Errorln("error is parsing reqest body")
+				}
+				userBody := map[string]interface{}{}
+				err = json.Unmarshal(body, &userBody)
+				if err != nil {
+					logrus.Errorln("error cannot unmarshal request body")
+				}
+				if userBody["data"] != nil {
+					reqBody["user"] = userBody["data"]
+				} else {
+					reqBody["user"] = map[string]interface{}{}
+				}
+			} else {
+				reqBody["user"] = map[string]interface{}{}
+			}
+		} else {
+			reqBody["user"] = map[string]interface{}{}
+		}
+		marshaledData, err := json.Marshal(reqBody)
+		if err != nil {
+			logrus.Errorln("error cannot marshal request body")
+		}
+		ctx.Request.ContentLength = int64(len(marshaledData))
+		ctx.Writer.Header().Set("Content-Type", "application/json")
+		ctx.Request.Body = ioutil.NopCloser(strings.NewReader(string(marshaledData)))
 		Proxy(targetUrl).ServeHTTP(ctx.Writer, ctx.Request)
 	}
 }
@@ -72,7 +117,7 @@ func readBody(response *http.Response) (uuid.UUID, string) {
 	all, _ := ioutil.ReadAll(response.Body)
 	u := uuid.New()
 	var s string
-	if len(all) > 0 {
+	if len(all) < 0 {
 		s = string(all)
 	}
 	return u, s
@@ -88,6 +133,7 @@ func main() {
 	r.Any("/blog/*proxyAddr", ReverseProxy)
 	r.Any("/album/*proxyAddr", ReverseProxy)
 	r.Any("/payment/*proxyAddr", ReverseProxy)
+	r.Any("/target1/*proxyAddr", ReverseProxy)
 
 	r.Run(fmt.Sprintf(":%d", *port))
 }
